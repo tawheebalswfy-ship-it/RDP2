@@ -1,4 +1,4 @@
-name: RDP + Final Dual Platforms (Safe Multi-Release)
+name: RDP + MT5 Only (Safe Multi-Release)
 
 on:
   workflow_dispatch:
@@ -35,7 +35,7 @@ jobs:
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: 3. Download and Extract to Desktop
+      - name: 3. Download and Extract MT5 to Desktop
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -51,24 +51,11 @@ jobs:
 
           $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
 
-          $assetMT4 = $null
           $assetMT5 = $null
-          $assetMT4Release = $null
           $assetMT5Release = $null
 
           foreach ($release in $releases) {
             if (-not $release.assets) { continue }
-
-            if (-not $assetMT4) {
-              $candidateMT4 = $release.assets | Where-Object {
-                $_.name -like "*OneRoyal.MT4.Terminal.zip*"
-              } | Select-Object -First 1
-
-              if ($candidateMT4) {
-                $assetMT4 = $candidateMT4
-                $assetMT4Release = $release.tag_name
-              }
-            }
 
             if (-not $assetMT5) {
               $candidateMT5 = $release.assets | Where-Object {
@@ -81,37 +68,24 @@ jobs:
               }
             }
 
-            if ($assetMT4 -and $assetMT5) {
-              break
-            }
+            if ($assetMT5) { break }
           }
 
-          if ($assetMT4) {
-            Write-Host "Downloading MT4: $($assetMT4.name)"
-            Write-Host "Found in release: $assetMT4Release"
-            Invoke-WebRequest -Uri $assetMT4.browser_download_url -OutFile "$env:TEMP\MT4.zip" -Headers $headers
-            Expand-Archive -Path "$env:TEMP\MT4.zip" -DestinationPath "$desktop\MT4_Platform" -Force
-          } else {
-            Write-Host "MT4 asset not found in any release" -ForegroundColor Red
-            exit 1
-          }
-
-          if ($assetMT5) {
-            Write-Host "Downloading MT5: $($assetMT5.name)"
-            Write-Host "Found in release: $assetMT5Release"
-            Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
-            Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
-          } else {
+          if (-not $assetMT5) {
             Write-Host "MT5 asset not found in any release" -ForegroundColor Red
             exit 1
           }
 
-      - name: 4. Detect Executables and Create Login Configs
+          Write-Host "Downloading MT5: $($assetMT5.name)"
+          Write-Host "Found in release: $assetMT5Release"
+          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
+          Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath "$desktop\MT5_Platform" -Force
+
+      - name: 4. Detect MT5 Executable and Create Login Config
         shell: pwsh
         run: |
           $desktop = [System.Environment]::GetFolderPath("Desktop")
 
-          # MT5
           $mt5Candidates = Get-ChildItem -Path "$desktop\MT5_Platform" -Recurse -File -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
 
@@ -151,33 +125,6 @@ jobs:
           Write-Host "MT5 EXE: $($mt5Exe.FullName)"
           Write-Host "MT5 INI: $vmIniPath"
 
-          # MT4
-          $mt4Exe = Get-ChildItem -Path "$desktop\MT4_Platform" -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -eq "terminal.exe" } |
-            Select-Object -First 1
-
-          if (-not $mt4Exe) {
-            Write-Host "MT4 terminal.exe not found" -ForegroundColor Red
-            exit 1
-          }
-
-          $mt4Dir = $mt4Exe.DirectoryName
-          $terminalIniPath = Join-Path $mt4Dir "terminal.ini"
-
-          $mt4Content = @(
-            "Login=31335811"
-            "Password=dcym47"
-            "Server=ICMarketsSC-Demo03"
-          ) -join "`r`n"
-
-          $mt4Content | Out-File -FilePath $terminalIniPath -Encoding ascii -Force
-
-          "MT4_EXE=$($mt4Exe.FullName)" >> $env:GITHUB_ENV
-          "MT4_INI=$terminalIniPath" >> $env:GITHUB_ENV
-
-          Write-Host "MT4 EXE: $($mt4Exe.FullName)"
-          Write-Host "MT4 INI: $terminalIniPath"
-
       - name: 5. Connect Tailscale
         shell: pwsh
         env:
@@ -189,7 +136,7 @@ jobs:
           $tsIP = (& "C:\Program Files\Tailscale\tailscale.exe" ip -4 | Select-Object -First 1).Trim()
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 6. Launch Platforms Correctly
+      - name: 6. Launch MT5 Platform
         shell: pwsh
         run: |
           Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
@@ -197,7 +144,6 @@ jobs:
 
           Start-Sleep -Seconds 3
 
-          # Launch MT5
           if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
             Write-Host "Launching MT5..."
             Write-Host "MT5 EXE: $env:MT5_EXE"
@@ -209,22 +155,7 @@ jobs:
               -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
           } else {
             Write-Host "MT5 exe or ini missing" -ForegroundColor Red
-          }
-
-          Start-Sleep -Seconds 8
-
-          # Launch MT4
-          if ($env:MT4_EXE -and (Test-Path $env:MT4_EXE) -and $env:MT4_INI -and (Test-Path $env:MT4_INI)) {
-            Write-Host "Launching MT4..."
-            Write-Host "MT4 EXE: $env:MT4_EXE"
-            Write-Host "MT4 INI: $env:MT4_INI"
-
-            Start-Process `
-              -FilePath $env:MT4_EXE `
-              -ArgumentList "/portable", "`"$env:MT4_INI`"" `
-              -WorkingDirectory (Split-Path $env:MT4_EXE -Parent)
-          } else {
-            Write-Host "MT4 exe or ini missing" -ForegroundColor Red
+            exit 1
           }
 
       - name: 7. Keep Alive
@@ -232,14 +163,12 @@ jobs:
         run: |
           Write-Host ""
           Write-Host "=============================="
-          Write-Host "RDP READY"
+          Write-Host "RDP READY - MT5 ONLY"
           Write-Host "Address : $env:TAILSCALE_IP"
           Write-Host "User    : $env:RDP_USER"
           Write-Host "Pass    : $env:RDP_PASS"
           Write-Host "MT5 EXE : $env:MT5_EXE"
           Write-Host "MT5 INI : $env:MT5_INI"
-          Write-Host "MT4 EXE : $env:MT4_EXE"
-          Write-Host "MT4 INI : $env:MT4_INI"
           Write-Host "=============================="
 
           $end = (Get-Date).AddMinutes(345)
