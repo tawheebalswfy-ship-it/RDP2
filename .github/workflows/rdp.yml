@@ -66,12 +66,6 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            "User-Agent"  = "gh-actions"
-            Accept        = "application/vnd.github+json"
-          }
-
           $repo = "${{ github.repository }}"
           $mt5Path = "C:\MT5_Platform"
 
@@ -85,9 +79,15 @@ jobs:
             exit 0
           }
 
-          Write-Host "No previous MT5 data found. Downloading MT5 from release..."
+          Write-Host "No previous MT5 data found. Searching releases..."
 
-          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
+          $apiHeaders = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            "User-Agent" = "gh-actions"
+            Accept = "application/vnd.github+json"
+          }
+
+          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $apiHeaders -ErrorAction Stop
 
           $assetMT5 = $null
           $assetMT5Release = $null
@@ -113,23 +113,36 @@ jobs:
             exit 1
           }
 
-          Write-Host "Downloading MT5: $($assetMT5.name)"
+          Write-Host "Found MT5 asset: $($assetMT5.name)"
           Write-Host "Found in release: $assetMT5Release"
+          Write-Host "Asset size from GitHub: $($assetMT5.size) bytes"
 
-          $downloadUrl = $assetMT5.browser_download_url
-          try {
-            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile "$env:TEMP\MT5.zip" -UseBasicParsing -ErrorAction Stop
-          } catch {
-            Write-Host "MT5 download failed: $($_.Exception.Message)" -ForegroundColor Red
+          $downloadPath = "$env:TEMP\MT5.zip"
+
+          if (Test-Path $downloadPath) {
+            Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue
+          }
+
+          Write-Host "Downloading MT5 using GitHub asset API..."
+
+          curl.exe -L --fail `
+            -H "Authorization: Bearer $env:GH_TOKEN" `
+            -H "User-Agent: gh-actions" `
+            -H "Accept: application/octet-stream" `
+            -o "$downloadPath" `
+            "$($assetMT5.url)"
+
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "curl download failed with exit code $LASTEXITCODE" -ForegroundColor Red
             exit 1
           }
 
-          if (-not (Test-Path "$env:TEMP\MT5.zip")) {
+          if (-not (Test-Path $downloadPath)) {
             Write-Host "MT5.zip was not downloaded" -ForegroundColor Red
             exit 1
           }
 
-          $zipSize = (Get-Item "$env:TEMP\MT5.zip").Length
+          $zipSize = (Get-Item $downloadPath).Length
           Write-Host "Downloaded MT5.zip size: $zipSize bytes"
 
           if ($zipSize -lt 1000000) {
@@ -142,7 +155,11 @@ jobs:
           }
 
           New-Item -ItemType Directory -Path $mt5Path -Force | Out-Null
-          Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath $mt5Path -Force
+
+          Write-Host "Extracting MT5.zip..."
+          Expand-Archive -Path $downloadPath -DestinationPath $mt5Path -Force
+
+          Write-Host "MT5 extracted successfully to $mt5Path"
 
       - name: 5 Detect MT5 Executable and Create Login Config
         shell: pwsh
