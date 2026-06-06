@@ -114,7 +114,40 @@ jobs:
           Write-Host "Downloading MT5: $($assetMT5.name)"
           Write-Host "Found in release: $assetMT5Release"
 
-          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
+          $downloadPath = "$env:TEMP\MT5.zip"
+
+          if (Test-Path $downloadPath) { Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue }
+
+          $assetUrl = $assetMT5.url
+          $attempt = 0
+          $success = $false
+
+          while ($attempt -lt 3 -and -not $success) {
+            $attempt++
+            Write-Host "Download attempt $attempt for $($assetMT5.name)"
+            try {
+              Invoke-WebRequest -Uri $assetUrl -Method Get -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "gh-actions"; Accept = "application/octet-stream" } -OutFile $downloadPath -MaximumRedirection 10 -TimeoutSec 300 -ErrorAction Stop
+              $success = $true
+            } catch {
+              Write-Host "Invoke-WebRequest attempt $attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
+              Start-Sleep -Seconds (5 * $attempt)
+            }
+          }
+
+          if (-not $success) {
+            Write-Host "Invoke-WebRequest failed after retries; attempting curl fallback..." -ForegroundColor Yellow
+            curl.exe -L --fail `
+              -H "Authorization: Bearer $env:GH_TOKEN" `
+              -H "User-Agent: gh-actions" `
+              -H "Accept: application/octet-stream" `
+              -o "$downloadPath" `
+              "$assetUrl"
+
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "curl fallback failed with exit code $LASTEXITCODE" -ForegroundColor Red
+              exit 1
+            }
+          }
 
           $zipSize = (Get-Item "$env:TEMP\MT5.zip").Length
           Write-Host "Downloaded MT5.zip size: $zipSize bytes"
