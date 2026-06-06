@@ -116,7 +116,26 @@ jobs:
           Write-Host "Downloading MT5: $($assetMT5.name)"
           Write-Host "Found in release: $assetMT5Release"
 
-          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
+          $downloadUrl = $assetMT5.browser_download_url
+          try {
+            Invoke-WebRequest -Uri $downloadUrl -Headers $headers -OutFile "$env:TEMP\MT5.zip" -UseBasicParsing -ErrorAction Stop
+          } catch {
+            Write-Host "MT5 download failed: $($_.Exception.Message)" -ForegroundColor Red
+            exit 1
+          }
+
+          if (-not (Test-Path "$env:TEMP\MT5.zip")) {
+            Write-Host "MT5.zip was not downloaded" -ForegroundColor Red
+            exit 1
+          }
+
+          $zipSize = (Get-Item "$env:TEMP\MT5.zip").Length
+          Write-Host "Downloaded MT5.zip size: $zipSize bytes"
+
+          if ($zipSize -lt 1000000) {
+            Write-Host "Downloaded file is too small. Possible download failure." -ForegroundColor Red
+            exit 1
+          }
 
           if (Test-Path $mt5Path) {
             Remove-Item $mt5Path -Recurse -Force -ErrorAction SilentlyContinue
