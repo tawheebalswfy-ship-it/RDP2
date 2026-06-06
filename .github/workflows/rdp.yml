@@ -164,9 +164,56 @@ jobs:
           New-Item -ItemType Directory -Path $mt5Path -Force | Out-Null
 
           Write-Host "Extracting MT5.zip..."
-          Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath $mt5Path -Force
 
-          Write-Host "MT5 extracted successfully to $mt5Path"
+          # Check free disk space on drive where MT5 will be extracted
+          $driveLetter = $mt5Path.Substring(0,1)
+          try {
+            $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction Stop).Free
+          } catch {
+            $freeBytes = $null
+          }
+
+          if ($freeBytes -ne $null) {
+            Write-Host "Free space on $driveLetter`: $([math]::Round($freeBytes/1GB,2)) GB"
+            if ($freeBytes -lt 1GB) {
+              Write-Host "Not enough free disk space to extract MT5" -ForegroundColor Red
+              exit 1
+            }
+          }
+
+          # Run extraction in a background job with timeout to avoid hangs
+          $zipPath = "$env:TEMP\MT5.zip"
+          $extractTimeoutSec = 600
+          $extractJob = Start-Job -ScriptBlock { param($z,$d) Expand-Archive -Path $z -DestinationPath $d -Force } -ArgumentList $zipPath,$mt5Path
+          $completed = Wait-Job -Job $extractJob -Timeout $extractTimeoutSec
+
+          if (-not $completed) {
+            Write-Host "Extraction timed out after $extractTimeoutSec seconds. Attempting fallback extraction..." -ForegroundColor Yellow
+            try {
+              Stop-Job $extractJob -ErrorAction SilentlyContinue | Out-Null
+              Remove-Job $extractJob -ErrorAction SilentlyContinue | Out-Null
+            } catch {}
+
+            try {
+              Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+              [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $mt5Path)
+            } catch {
+              Write-Host "Fallback extraction failed: $($_.Exception.Message)" -ForegroundColor Red
+              exit 1
+            }
+          } else {
+            Receive-Job $extractJob | Out-Null
+            Remove-Job $extractJob | Out-Null
+          }
+
+          # Verify extraction
+          $extractedFiles = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue
+          if (-not $extractedFiles -or $extractedFiles.Count -eq 0) {
+            Write-Host "No files were extracted. Extraction failed." -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host "MT5 extracted successfully to $mt5Path - $($extractedFiles.Count) files"
 
       - name: 5 Detect MT5 Executable and Create Login Config
         shell: pwsh
