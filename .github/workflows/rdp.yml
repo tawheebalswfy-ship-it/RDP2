@@ -1,5 +1,4 @@
-
-name: RDP + MT5 Only (Safe Multi-Release)
+name: RDP + MT5 Only Safe Multi Release
 
 on:
   workflow_dispatch:
@@ -16,14 +15,14 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: 1. Setup RDP Settings
+      - name: 1 Setup RDP Settings
         shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
           Restart-Service -Name TermService -Force
 
-      - name: 2. Create RDP User
+      - name: 2 Create RDP User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -43,20 +42,26 @@ jobs:
             Write-Host "User may already exist, continuing..."
           }
 
-          try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop } catch {}
-          try { Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop } catch {}
+          try {
+            Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop
+          } catch {}
+
+          try {
+            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop
+          } catch {}
 
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: 3. Restore Previous MT5 Data
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      - name: 3 Restore MT5 Cache
+        uses: actions/cache/restore@v4
         with:
-          name: mt5-session-data
-          path: C:\Users\runneradmin\Desktop\MT5_Platform
+          path: C:\MT5_Platform
+          key: mt5-session-${{ github.run_id }}
+          restore-keys: |
+            mt5-session-
 
-      - name: 4. Download and Extract MT5 to Desktop
+      - name: 4 Download and Extract MT5
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -68,11 +73,10 @@ jobs:
           }
 
           $repo = "${{ github.repository }}"
-          $desktop = [System.Environment]::GetFolderPath("Desktop")
-          $mt5Path = "$desktop\MT5_Platform"
+          $mt5Path = "C:\MT5_Platform"
 
           $existingMt5 = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") } |
+            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") } |
             Select-Object -First 1
 
           if ($existingMt5) {
@@ -89,20 +93,19 @@ jobs:
           $assetMT5Release = $null
 
           foreach ($release in $releases) {
-            if (-not $release.assets) { continue }
-
-            if (-not $assetMT5) {
-              $candidateMT5 = $release.assets | Where-Object {
-                $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
-              } | Select-Object -First 1
-
-              if ($candidateMT5) {
-                $assetMT5 = $candidateMT5
-                $assetMT5Release = $release.tag_name
-              }
+            if (-not $release.assets) {
+              continue
             }
 
-            if ($assetMT5) { break }
+            $candidateMT5 = $release.assets | Where-Object {
+              $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
+            } | Select-Object -First 1
+
+            if ($candidateMT5) {
+              $assetMT5 = $candidateMT5
+              $assetMT5Release = $release.tag_name
+              break
+            }
           }
 
           if (-not $assetMT5) {
@@ -122,7 +125,7 @@ jobs:
           New-Item -ItemType Directory -Path $mt5Path -Force | Out-Null
           Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath $mt5Path -Force
 
-      - name: 5. Detect MT5 Executable and Create Login Config
+      - name: 5 Detect MT5 Executable and Create Login Config
         shell: pwsh
         env:
           MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
@@ -144,18 +147,17 @@ jobs:
             exit 1
           }
 
-          $desktop = [System.Environment]::GetFolderPath("Desktop")
-          $mt5Path = "$desktop\MT5_Platform"
+          $mt5Path = "C:\MT5_Platform"
 
           $mt5Candidates = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
+            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") }
 
           $mt5Exe = $mt5Candidates |
             Sort-Object @{ Expression = {
               switch ($_.Name) {
-                "terminal64.exe" { 0 }
-                "terminal.exe"   { 1 }
-                "launcher.exe"   { 2 }
+                "launcher.exe"   { 0 }
+                "terminal64.exe" { 1 }
+                "terminal.exe"   { 2 }
                 default          { 9 }
               }
             }} |
@@ -186,7 +188,7 @@ jobs:
           Write-Host "MT5 EXE: $($mt5Exe.FullName)"
           Write-Host "MT5 INI: $vmIniPath"
 
-      - name: 6. Connect Tailscale
+      - name: 6 Connect Tailscale
         shell: pwsh
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -210,7 +212,7 @@ jobs:
 
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 7. Launch MT5 Platform
+      - name: 7 Prepare MT5 Auto Launch
         shell: pwsh
         run: |
           Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
@@ -218,21 +220,59 @@ jobs:
 
           Start-Sleep -Seconds 3
 
-          if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
-            Write-Host "Launching MT5..."
-            Write-Host "MT5 EXE: $env:MT5_EXE"
-            Write-Host "MT5 INI: $env:MT5_INI"
-
-            Start-Process `
-              -FilePath $env:MT5_EXE `
-              -ArgumentList "/portable", "/config:$env:MT5_INI" `
-              -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
-          } else {
-            Write-Host "MT5 exe or ini missing" -ForegroundColor Red
+          if (-not ($env:MT5_EXE -and (Test-Path $env:MT5_EXE))) {
+            Write-Host "MT5 exe missing" -ForegroundColor Red
             exit 1
           }
 
-      - name: 8. Keep Alive
+          if (-not ($env:MT5_INI -and (Test-Path $env:MT5_INI))) {
+            Write-Host "MT5 ini missing" -ForegroundColor Red
+            exit 1
+          }
+
+          $mt5Dir = Split-Path $env:MT5_EXE -Parent
+
+          Write-Host "Preparing MT5 auto launch..."
+          Write-Host "MT5 EXE: $env:MT5_EXE"
+          Write-Host "MT5 INI: $env:MT5_INI"
+
+          $commonStartupDir = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
+          New-Item -ItemType Directory -Path $commonStartupDir -Force | Out-Null
+
+          $batPath = Join-Path $commonStartupDir "Start-MT5.bat"
+
+          $batLines = @(
+            "@echo off",
+            "timeout /t 5 /nobreak >nul",
+            "cd /d `"$mt5Dir`"",
+            "start `"`" `"$env:MT5_EXE`" /portable /config:`"$env:MT5_INI`""
+          )
+
+          $batLines | Out-File -FilePath $batPath -Encoding ASCII -Force
+
+          Write-Host "Common startup file created:"
+          Write-Host $batPath
+
+          $publicDesktop = "C:\Users\Public\Desktop"
+          New-Item -ItemType Directory -Path $publicDesktop -Force | Out-Null
+
+          $shortcutPath = Join-Path $publicDesktop "MT5 Platform.lnk"
+          $shell = New-Object -ComObject WScript.Shell
+          $shortcut = $shell.CreateShortcut($shortcutPath)
+          $shortcut.TargetPath = $env:MT5_EXE
+          $shortcut.Arguments = "/portable /config:`"$env:MT5_INI`""
+          $shortcut.WorkingDirectory = $mt5Dir
+          $shortcut.Save()
+
+          Write-Host "Public desktop shortcut created:"
+          Write-Host $shortcutPath
+
+          Write-Host "Trying to launch MT5 now from workflow session..."
+          Start-Process -FilePath $env:MT5_EXE -ArgumentList "/portable", "/config:$env:MT5_INI" -WorkingDirectory $mt5Dir
+
+          Write-Host "If MT5 is not visible, reconnect RDP. It will auto start after login."
+
+      - name: 8 Keep Alive
         shell: pwsh
         run: |
           Write-Host ""
@@ -245,20 +285,17 @@ jobs:
           Write-Host "MT5 INI : $env:MT5_INI"
           Write-Host "=============================="
 
-          # Ends before timeout so the next step can upload MT5 data.
           $end = (Get-Date).AddMinutes(340)
 
           while ((Get-Date) -lt $end) {
             Start-Sleep -Seconds 60
           }
 
-          Write-Host "Session finished safely. Saving MT5 data next..."
+          Write-Host "Session finished safely. Saving MT5 cache next..."
 
-      - name: 9. Save MT5 Session Data
+      - name: 9 Save MT5 Cache
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: mt5-session-data
-          path: C:\Users\runneradmin\Desktop\MT5_Platform
-          retention-days: 7
-
+          path: C:\MT5_Platform
+          key: mt5-session-${{ github.run_id }}
