@@ -1,4 +1,4 @@
-```yaml
+
 name: RDP + MT5 Only (Safe Multi-Release)
 
 on:
@@ -261,4 +261,4 @@ jobs:
           name: mt5-session-data
           path: C:\Users\runneradmin\Desktop\MT5_Platform
           retention-days: 7
-```
+
