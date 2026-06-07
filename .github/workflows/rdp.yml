@@ -1,4 +1,4 @@
-name: RDP + MT5 Only Safe Multi Release
+name: RDP + MT5 Only (Safe Multi-Release)
 
 on:
   workflow_dispatch:
@@ -15,14 +15,14 @@ jobs:
     timeout-minutes: 350
 
     steps:
-      - name: 1 Setup RDP Settings
+      - name: 1. Setup RDP Settings
         shell: pwsh
         run: |
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
           Restart-Service -Name TermService -Force
 
-      - name: 2 Create RDP User
+      - name: 2. Create RDP User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -42,26 +42,20 @@ jobs:
             Write-Host "User may already exist, continuing..."
           }
 
-          try {
-            Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop
-          } catch {}
-
-          try {
-            Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop
-          } catch {}
+          try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop } catch {}
+          try { Add-LocalGroupMember -Group "Remote Desktop Users" -Member $user -ErrorAction Stop } catch {}
 
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: 3 Restore MT5 Cache
-        uses: actions/cache/restore@v4
+      - name: 3. Restore Previous MT5 Data
+        uses: actions/download-artifact@v4
+        continue-on-error: true
         with:
-          path: C:\MT5_Platform
-          key: mt5-session-${{ github.run_id }}
-          restore-keys: |
-            mt5-session-
+          name: mt5-session-data
+          path: C:\Users\runneradmin\Desktop\MT5_Platform
 
-      - name: 4 Download and Extract MT5
+      - name: 4. Download and Extract MT5 to Desktop
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -73,10 +67,11 @@ jobs:
           }
 
           $repo = "${{ github.repository }}"
-          $mt5Path = "C:\MT5_Platform"
+          $desktop = [System.Environment]::GetFolderPath("Desktop")
+          $mt5Path = "$desktop\MT5_Platform"
 
           $existingMt5 = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") } |
+            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") } |
             Select-Object -First 1
 
           if ($existingMt5) {
@@ -95,15 +90,18 @@ jobs:
           foreach ($release in $releases) {
             if (-not $release.assets) { continue }
 
-            $candidateMT5 = $release.assets | Where-Object {
-              $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
-            } | Select-Object -First 1
+            if (-not $assetMT5) {
+              $candidateMT5 = $release.assets | Where-Object {
+                $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
+              } | Select-Object -First 1
 
-            if ($candidateMT5) {
-              $assetMT5 = $candidateMT5
-              $assetMT5Release = $release.tag_name
-              break
+              if ($candidateMT5) {
+                $assetMT5 = $candidateMT5
+                $assetMT5Release = $release.tag_name
+              }
             }
+
+            if ($assetMT5) { break }
           }
 
           if (-not $assetMT5) {
@@ -114,108 +112,16 @@ jobs:
           Write-Host "Downloading MT5: $($assetMT5.name)"
           Write-Host "Found in release: $assetMT5Release"
 
-          $downloadPath = "$env:TEMP\MT5.zip"
-
-          if (Test-Path $downloadPath) { Remove-Item $downloadPath -Force -ErrorAction SilentlyContinue }
-
-          $assetUrl = $assetMT5.url
-          $attempt = 0
-          $success = $false
-
-          while ($attempt -lt 3 -and -not $success) {
-            $attempt++
-            Write-Host "Download attempt $attempt for $($assetMT5.name)"
-            try {
-              Invoke-WebRequest -Uri $assetUrl -Method Get -Headers @{ Authorization = "Bearer $env:GH_TOKEN"; "User-Agent" = "gh-actions"; Accept = "application/octet-stream" } -OutFile $downloadPath -MaximumRedirection 10 -TimeoutSec 300 -ErrorAction Stop
-              $success = $true
-            } catch {
-              Write-Host "Invoke-WebRequest attempt $attempt failed: $($_.Exception.Message)" -ForegroundColor Yellow
-              Start-Sleep -Seconds (5 * $attempt)
-            }
-          }
-
-          if (-not $success) {
-            Write-Host "Invoke-WebRequest failed after retries; attempting curl fallback..." -ForegroundColor Yellow
-            curl.exe -L --fail `
-              -H "Authorization: Bearer $env:GH_TOKEN" `
-              -H "User-Agent: gh-actions" `
-              -H "Accept: application/octet-stream" `
-              -o "$downloadPath" `
-              "$assetUrl"
-
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "curl fallback failed with exit code $LASTEXITCODE" -ForegroundColor Red
-              exit 1
-            }
-          }
-
-          $zipSize = (Get-Item "$env:TEMP\MT5.zip").Length
-          Write-Host "Downloaded MT5.zip size: $zipSize bytes"
-
-          if ($zipSize -lt 1000000) {
-            Write-Host "Downloaded file is too small. Possible download failure." -ForegroundColor Red
-            exit 1
-          }
+          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
 
           if (Test-Path $mt5Path) {
             Remove-Item $mt5Path -Recurse -Force -ErrorAction SilentlyContinue
           }
 
           New-Item -ItemType Directory -Path $mt5Path -Force | Out-Null
+          Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath $mt5Path -Force
 
-          Write-Host "Extracting MT5.zip..."
-
-          # Check free disk space on drive where MT5 will be extracted
-          $driveLetter = $mt5Path.Substring(0,1)
-          try {
-            $freeBytes = (Get-PSDrive -Name $driveLetter -ErrorAction Stop).Free
-          } catch {
-            $freeBytes = $null
-          }
-
-          if ($freeBytes -ne $null) {
-            Write-Host "Free space on $driveLetter`: $([math]::Round($freeBytes/1GB,2)) GB"
-            if ($freeBytes -lt 1GB) {
-              Write-Host "Not enough free disk space to extract MT5" -ForegroundColor Red
-              exit 1
-            }
-          }
-
-          # Run extraction in a background job with timeout to avoid hangs
-          $zipPath = "$env:TEMP\MT5.zip"
-          $extractTimeoutSec = 600
-          $extractJob = Start-Job -ScriptBlock { param($z,$d) Expand-Archive -Path $z -DestinationPath $d -Force } -ArgumentList $zipPath,$mt5Path
-          $completed = Wait-Job -Job $extractJob -Timeout $extractTimeoutSec
-
-          if (-not $completed) {
-            Write-Host "Extraction timed out after $extractTimeoutSec seconds. Attempting fallback extraction..." -ForegroundColor Yellow
-            try {
-              Stop-Job $extractJob -ErrorAction SilentlyContinue | Out-Null
-              Remove-Job $extractJob -ErrorAction SilentlyContinue | Out-Null
-            } catch {}
-
-            try {
-              Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-              [IO.Compression.ZipFile]::ExtractToDirectory($zipPath, $mt5Path)
-            } catch {
-              Write-Host "Fallback extraction failed: $($_.Exception.Message)" -ForegroundColor Red
-              exit 1
-            }
-          } else {
-            Receive-Job $extractJob | Out-Null
-            Remove-Job $extractJob | Out-Null
-          }
-
-          # Verify extraction
-          $extractedFiles = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue
-          if (-not $extractedFiles -or $extractedFiles.Count -eq 0) {
-            Write-Host "No files were extracted. Extraction failed." -ForegroundColor Red
-            exit 1
-          }
-
-          Write-Host "MT5 extracted successfully to $mt5Path - $($extractedFiles.Count) files"
-
-      - name: 5 Detect MT5 Executable and Create Login Config
+      - name: 5. Detect MT5 Executable and Create Login Config
         shell: pwsh
         env:
           MT5_LOGIN: ${{ secrets.MT5_LOGIN }}
@@ -237,17 +143,18 @@ jobs:
             exit 1
           }
 
-          $mt5Path = "C:\MT5_Platform"
+          $desktop = [System.Environment]::GetFolderPath("Desktop")
+          $mt5Path = "$desktop\MT5_Platform"
 
           $mt5Candidates = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") }
+            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
 
           $mt5Exe = $mt5Candidates |
             Sort-Object @{ Expression = {
               switch ($_.Name) {
-                "launcher.exe"   { 0 }
-                "terminal64.exe" { 1 }
-                "terminal.exe"   { 2 }
+                "terminal64.exe" { 0 }
+                "terminal.exe"   { 1 }
+                "launcher.exe"   { 2 }
                 default          { 9 }
               }
             }} |
@@ -278,7 +185,7 @@ jobs:
           Write-Host "MT5 EXE: $($mt5Exe.FullName)"
           Write-Host "MT5 INI: $vmIniPath"
 
-      - name: 6 Connect Tailscale
+      - name: 6. Connect Tailscale
         shell: pwsh
         env:
           TS_KEY: ${{ secrets.TAILSCALE_AUTH_KEY }}
@@ -302,7 +209,7 @@ jobs:
 
           "TAILSCALE_IP=$tsIP" >> $env:GITHUB_ENV
 
-      - name: 7 Prepare MT5 Auto Launch
+      - name: 7. Launch MT5 Platform
         shell: pwsh
         run: |
           Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
@@ -310,59 +217,21 @@ jobs:
 
           Start-Sleep -Seconds 3
 
-          if (-not ($env:MT5_EXE -and (Test-Path $env:MT5_EXE))) {
-            Write-Host "MT5 exe missing" -ForegroundColor Red
+          if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
+            Write-Host "Launching MT5..."
+            Write-Host "MT5 EXE: $env:MT5_EXE"
+            Write-Host "MT5 INI: $env:MT5_INI"
+
+            Start-Process `
+              -FilePath $env:MT5_EXE `
+              -ArgumentList "/portable", "/config:$env:MT5_INI" `
+              -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
+          } else {
+            Write-Host "MT5 exe or ini missing" -ForegroundColor Red
             exit 1
           }
 
-          if (-not ($env:MT5_INI -and (Test-Path $env:MT5_INI))) {
-            Write-Host "MT5 ini missing" -ForegroundColor Red
-            exit 1
-          }
-
-          $mt5Dir = Split-Path $env:MT5_EXE -Parent
-
-          Write-Host "Preparing MT5 auto launch..."
-          Write-Host "MT5 EXE: $env:MT5_EXE"
-          Write-Host "MT5 INI: $env:MT5_INI"
-
-          $commonStartupDir = "C:\ProgramData\Microsoft\Windows\Start Menu\Programs\StartUp"
-          New-Item -ItemType Directory -Path $commonStartupDir -Force | Out-Null
-
-          $batPath = Join-Path $commonStartupDir "Start-MT5.bat"
-
-          $batLines = @(
-            "@echo off",
-            "timeout /t 5 /nobreak >nul",
-            "cd /d `"$mt5Dir`"",
-            "start `"`" `"$env:MT5_EXE`" /portable /config:`"$env:MT5_INI`""
-          )
-
-          $batLines | Out-File -FilePath $batPath -Encoding ASCII -Force
-
-          Write-Host "Common startup file created:"
-          Write-Host $batPath
-
-          $publicDesktop = "C:\Users\Public\Desktop"
-          New-Item -ItemType Directory -Path $publicDesktop -Force | Out-Null
-
-          $shortcutPath = Join-Path $publicDesktop "MT5 Platform.lnk"
-          $shell = New-Object -ComObject WScript.Shell
-          $shortcut = $shell.CreateShortcut($shortcutPath)
-          $shortcut.TargetPath = $env:MT5_EXE
-          $shortcut.Arguments = "/portable /config:`"$env:MT5_INI`""
-          $shortcut.WorkingDirectory = $mt5Dir
-          $shortcut.Save()
-
-          Write-Host "Public desktop shortcut created:"
-          Write-Host $shortcutPath
-
-          Write-Host "Trying to launch MT5 now from workflow session..."
-          Start-Process -FilePath $env:MT5_EXE -ArgumentList "/portable", "/config:$env:MT5_INI" -WorkingDirectory $mt5Dir
-
-          Write-Host "If MT5 is not visible, reconnect RDP. It will auto start after login."
-
-      - name: 8 Keep Alive
+      - name: 8. Keep Alive
         shell: pwsh
         run: |
           Write-Host ""
@@ -375,17 +244,20 @@ jobs:
           Write-Host "MT5 INI : $env:MT5_INI"
           Write-Host "=============================="
 
+          # Ends before timeout so the next step can upload MT5 data.
           $end = (Get-Date).AddMinutes(340)
 
           while ((Get-Date) -lt $end) {
             Start-Sleep -Seconds 60
           }
 
-          Write-Host "Session finished safely. Saving MT5 cache next..."
+          Write-Host "Session finished safely. Saving MT5 data next..."
 
-      - name: 9 Save MT5 Cache
+      - name: 9. Save MT5 Session Data
         if: always()
-        uses: actions/cache/save@v4
+        uses: actions/upload-artifact@v4
         with:
-          path: C:\MT5_Platform
-          key: mt5-session-${{ github.run_id }}
+          name: mt5-session-data
+          path: C:\Users\runneradmin\Desktop\MT5_Platform
+          retention-days: 7
+
