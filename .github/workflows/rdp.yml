@@ -150,20 +150,26 @@ jobs:
 
           $desktop = [System.Environment]::GetFolderPath("Desktop")
           $mt5Path = "$desktop\MT5_Platform"
+          $launcherPath = Join-Path $mt5Path "MT5\launcher.exe"
 
-          $mt5Candidates = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") }
+          if (Test-Path $launcherPath) {
+            Write-Host "Found launcher.exe at expected path: $launcherPath"
+            $mt5Exe = Get-Item $launcherPath
+          } else {
+            $mt5Candidates = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
+              Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") }
 
-          $mt5Exe = $mt5Candidates |
-            Sort-Object @{ Expression = {
-              switch ($_.Name) {
-                "launcher.exe"   { 0 }
-                "terminal64.exe" { 1 }
-                "terminal.exe"   { 2 }
-                default          { 9 }
-              }
-            }} |
-            Select-Object -First 1
+            $mt5Exe = $mt5Candidates |
+              Sort-Object @{ Expression = {
+                switch ($_.Name) {
+                  "launcher.exe"   { 0 }
+                  "terminal64.exe" { 1 }
+                  "terminal.exe"   { 2 }
+                  default          { 9 }
+                }
+              }} |
+              Select-Object -First 1
+          }
 
           if (-not $mt5Exe) {
             Write-Host "MT5 executable not found" -ForegroundColor Red
@@ -173,11 +179,18 @@ jobs:
           $mt5Dir = $mt5Exe.DirectoryName
           $vmIniPath = Join-Path $mt5Dir "vm.ini"
 
+          $mt5Login = $env:MT5_LOGIN
+          if (-not $mt5Login) { $mt5Login = "52814428" }
+          $mt5Password = $env:MT5_PASSWORD
+          if (-not $mt5Password) { $mt5Password = "XWkO&5Z00tXPr8" }
+          $mt5Server = $env:MT5_SERVER
+          if (-not $mt5Server) { $mt5Server = "ICMarketsSC-Demo" }
+
           $vmContent = @(
             "[Common]"
-            "Login=$env:MT5_LOGIN"
-            "Password=$env:MT5_PASSWORD"
-            "Server=$env:MT5_SERVER"
+            "Login=$mt5Login"
+            "Password=$mt5Password"
+            "Server=$mt5Server"
             "KeepPrivate=1"
             "NewsEnable=0"
           ) -join "`r`n"
