@@ -52,12 +52,13 @@ jobs:
           "RDP_USER=$user" >> $env:GITHUB_ENV
           "RDP_PASS=$password" >> $env:GITHUB_ENV
 
-      - name: 3. Restore Previous MT5 Data
-        uses: actions/download-artifact@v4
-        continue-on-error: true
+      - name: 3 Restore MT5 Cache
+        uses: actions/cache/restore@v4
         with:
-          name: mt5-session-data
           path: C:\Users\runneradmin\Desktop\MT5_Platform
+          key: mt5-session-${{ github.run_id }}
+          restore-keys: |
+            mt5-session-
 
       - name: 4. Download and Extract MT5 to Desktop
         shell: pwsh
@@ -291,11 +292,10 @@ jobs:
 
           Write-Host "Session finished safely. Saving MT5 data next..."
 
-      - name: 9. Save MT5 Session Data
+      - name: 9 Save MT5 Cache
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/cache/save@v4
         with:
-          name: mt5-session-data
           path: C:\Users\runneradmin\Desktop\MT5_Platform
-          retention-days: 7
+          key: mt5-session-${{ github.run_id }}
 
