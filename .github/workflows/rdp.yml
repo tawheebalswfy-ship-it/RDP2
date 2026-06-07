@@ -22,7 +22,7 @@ jobs:
           Enable-NetFirewallRule -DisplayGroup "Remote Desktop" | Out-Null
           Restart-Service -Name TermService -Force
 
-      - name: 2. Create RDP User
+      - name: 2 Setup runneradmin RDP User
         shell: pwsh
         env:
           RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
@@ -34,12 +34,16 @@ jobs:
 
           $password = $env:RDP_PASSWORD
           $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          $user = "RDP"
+          $user = "runneradmin"
+
+          Write-Host "Setting RDP password for runneradmin..."
 
           try {
-            New-LocalUser -Name $user -Password $securePass -AccountNeverExpires -ErrorAction Stop
+            Set-LocalUser -Name $user -Password $securePass -ErrorAction Stop
           } catch {
-            Write-Host "User may already exist, continuing..."
+            Write-Host "Failed to set password for runneradmin" -ForegroundColor Red
+            Write-Host $_.Exception.Message
+            exit 1
           }
 
           try { Add-LocalGroupMember -Group "Administrators" -Member $user -ErrorAction Stop } catch {}
@@ -233,7 +237,7 @@ jobs:
           Write-Host "MT5 EXE: $env:MT5_EXE"
           Write-Host "MT5 INI: $env:MT5_INI"
 
-          $rdpUser = "RDP"
+          $rdpUser = "runneradmin"
           $mt5Dir = Split-Path $env:MT5_EXE -Parent
 
           $startupDir = "C:\Users\$rdpUser\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
@@ -260,10 +264,10 @@ jobs:
           Start-Process -FilePath schtasks.exe -ArgumentList "/Create", "/TN", $taskName, "/TR", $taskAction, "/SC", "ONLOGON", "/RU", $rdpUser, "/RP", $env:RDP_PASSWORD, "/RL", "HIGHEST", "/F", "/IT" -Wait
 
           Write-Host "Scheduled task created: $taskName"
-          Write-Host "Attempting to run it now as RDP..."
+          Write-Host "Attempting to run it now as runneradmin..."
           Start-Process -FilePath schtasks.exe -ArgumentList "/Run", "/TN", $taskName -Wait
 
-          Write-Host "If MT5 is not visible yet, log out/in as RDP or reconnect. It will auto start on next RDP login."
+          Write-Host "If MT5 is not visible yet, log out/in as runneradmin or reconnect. It will auto start on next login."
 
       - name: 8. Keep Alive
         shell: pwsh
