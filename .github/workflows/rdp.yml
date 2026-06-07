@@ -147,14 +147,14 @@ jobs:
           $mt5Path = "$desktop\MT5_Platform"
 
           $mt5Candidates = Get-ChildItem -Path $mt5Path -Recurse -File -ErrorAction SilentlyContinue |
-            Where-Object { $_.Name -in @("terminal64.exe", "terminal.exe", "launcher.exe") }
+            Where-Object { $_.Name -in @("launcher.exe", "terminal64.exe", "terminal.exe") }
 
           $mt5Exe = $mt5Candidates |
             Sort-Object @{ Expression = {
               switch ($_.Name) {
-                "terminal64.exe" { 0 }
-                "terminal.exe"   { 1 }
-                "launcher.exe"   { 2 }
+                "launcher.exe"   { 0 }
+                "terminal64.exe" { 1 }
+                "terminal.exe"   { 2 }
                 default          { 9 }
               }
             }} |
@@ -211,25 +211,56 @@ jobs:
 
       - name: 7. Launch MT5 Platform
         shell: pwsh
+        env:
+          RDP_PASSWORD: ${{ secrets.RDP_PASSWORD }}
         run: |
           Get-Process -Name "terminal", "terminal64", "launcher", "metatrader" -ErrorAction SilentlyContinue |
             Stop-Process -Force -ErrorAction SilentlyContinue
 
           Start-Sleep -Seconds 3
 
-          if ($env:MT5_EXE -and (Test-Path $env:MT5_EXE) -and $env:MT5_INI -and (Test-Path $env:MT5_INI)) {
-            Write-Host "Launching MT5..."
-            Write-Host "MT5 EXE: $env:MT5_EXE"
-            Write-Host "MT5 INI: $env:MT5_INI"
-
-            Start-Process `
-              -FilePath $env:MT5_EXE `
-              -ArgumentList "/portable", "/config:$env:MT5_INI" `
-              -WorkingDirectory (Split-Path $env:MT5_EXE -Parent)
-          } else {
-            Write-Host "MT5 exe or ini missing" -ForegroundColor Red
+          if (-not ($env:MT5_EXE -and (Test-Path $env:MT5_EXE))) {
+            Write-Host "MT5 exe missing" -ForegroundColor Red
             exit 1
           }
+
+          if (-not ($env:MT5_INI -and (Test-Path $env:MT5_INI))) {
+            Write-Host "MT5 ini missing" -ForegroundColor Red
+            exit 1
+          }
+
+          Write-Host "Preparing MT5 auto launch for RDP user..."
+          Write-Host "MT5 EXE: $env:MT5_EXE"
+          Write-Host "MT5 INI: $env:MT5_INI"
+
+          $rdpUser = "RDP"
+          $taskName = "Launch-MT5-On-RDP-Login"
+          $mt5Dir = Split-Path $env:MT5_EXE -Parent
+
+          $startupDir = "C:\Users\$rdpUser\AppData\Roaming\Microsoft\Windows\Start Menu\Programs\Startup"
+          New-Item -ItemType Directory -Path $startupDir -Force | Out-Null
+
+          $batPath = Join-Path $startupDir "Start-MT5.bat"
+
+          $batContent = @"
+          @echo off
+          timeout /t 5 /nobreak >nul
+          cd /d "$mt5Dir"
+          start "" "$env:MT5_EXE" /portable /config:"$env:MT5_INI"
+          "@
+
+          $batContent | Out-File -FilePath $batPath -Encoding ASCII -Force
+
+          Write-Host "Startup file created:"
+          Write-Host $batPath
+
+          Write-Host "Trying to launch MT5 now from workflow session..."
+          Start-Process `
+            -FilePath $env:MT5_EXE `
+            -ArgumentList "/portable", "/config:$env:MT5_INI" `
+            -WorkingDirectory $mt5Dir
+
+          Write-Host "If MT5 is not visible, log out/in RDP or reconnect. It will auto start for user RDP."
 
       - name: 8. Keep Alive
         shell: pwsh
