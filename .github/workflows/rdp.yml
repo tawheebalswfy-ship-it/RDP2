@@ -60,7 +60,7 @@ jobs:
           restore-keys: |
             mt5-session-
 
-      - name: 4. Download and Extract MT5 to Desktop
+      - name: 4. Download and Extract All Release ZIP Assets
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
@@ -81,50 +81,70 @@ jobs:
 
           if ($existingMt5) {
             Write-Host "Previous MT5 data restored successfully."
-            Write-Host "Skipping fresh MT5 download."
+            Write-Host "Skipping fresh release download."
             exit 0
           }
-
-          Write-Host "No previous MT5 data found. Downloading MT5 from release..."
-
-          $releases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases" -Headers $headers
-
-          $assetMT5 = $null
-          $assetMT5Release = $null
-
-          foreach ($release in $releases) {
-            if (-not $release.assets) { continue }
-
-            if (-not $assetMT5) {
-              $candidateMT5 = $release.assets | Where-Object {
-                $_.name -like "*MetaTrader.5.zip*" -or $_.name -like "*MT5.zip*"
-              } | Select-Object -First 1
-
-              if ($candidateMT5) {
-                $assetMT5 = $candidateMT5
-                $assetMT5Release = $release.tag_name
-              }
-            }
-
-            if ($assetMT5) { break }
-          }
-
-          if (-not $assetMT5) {
-            Write-Host "MT5 asset not found in any release" -ForegroundColor Red
-            exit 1
-          }
-
-          Write-Host "Downloading MT5: $($assetMT5.name)"
-          Write-Host "Found in release: $assetMT5Release"
-
-          Invoke-WebRequest -Uri $assetMT5.browser_download_url -OutFile "$env:TEMP\MT5.zip" -Headers $headers
 
           if (Test-Path $mt5Path) {
             Remove-Item $mt5Path -Recurse -Force -ErrorAction SilentlyContinue
           }
 
           New-Item -ItemType Directory -Path $mt5Path -Force | Out-Null
-          Expand-Archive -Path "$env:TEMP\MT5.zip" -DestinationPath $mt5Path -Force
+
+          Write-Host "Getting all release assets..."
+
+          $allReleases = @()
+          $page = 1
+
+          do {
+            $pageReleases = Invoke-RestMethod -Uri "https://api.github.com/repos/$repo/releases?per_page=100&page=$page" -Headers $headers
+            if (-not $pageReleases -or $pageReleases.Count -eq 0) { break }
+            $allReleases += $pageReleases
+            $page++
+          } while ($true)
+
+          if (-not $allReleases -or $allReleases.Count -eq 0) {
+            Write-Host "No releases found for repository $repo" -ForegroundColor Red
+            exit 1
+          }
+
+          $allZipAssets = @()
+          foreach ($release in $allReleases) {
+            $releaseTag = if ($release.tag_name) { $release.tag_name } else { "untagged-release-$($release.id)" }
+            $zipAssets = $release.assets | Where-Object { $_.name -like "*.zip" }
+            foreach ($asset in $zipAssets) {
+              $allZipAssets += [PSCustomObject]@{
+                ReleaseTag = $releaseTag
+                Asset      = $asset
+              }
+            }
+          }
+
+          if (-not $allZipAssets -or $allZipAssets.Count -eq 0) {
+            Write-Host "No ZIP assets found in any release" -ForegroundColor Red
+            exit 1
+          }
+
+          foreach ($entry in $allZipAssets) {
+            $asset = $entry.Asset
+            $releaseTag = $entry.ReleaseTag
+
+            Write-Host "Downloading $($asset.name) from release $releaseTag"
+
+            $safeName = $asset.name -replace '[\\/:*?"<>|]', '_'
+            $safeRelease = $releaseTag -replace '[\\/:*?"<>|]', '_'
+            $zipFile = Join-Path $env:TEMP "$safeRelease-$safeName"
+            $extractDir = Join-Path $mt5Path "$safeRelease-$([System.IO.Path]::GetFileNameWithoutExtension($safeName))"
+
+            Invoke-WebRequest -Uri $asset.browser_download_url -OutFile $zipFile -Headers $headers
+
+            New-Item -ItemType Directory -Path $extractDir -Force | Out-Null
+
+            Write-Host "Extracting to: $extractDir"
+            Expand-Archive -Path $zipFile -DestinationPath $extractDir -Force
+          }
+
+          Write-Host "All release ZIP assets downloaded and extracted."
 
       - name: 5. Detect MT5 Executable and Create Login Config
         shell: pwsh
