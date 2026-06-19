@@ -56,7 +56,7 @@ jobs:
         uses: actions/cache/restore@v4
         with:
           path: C:\Users\runneradmin\Desktop\MT5_Platform
-          key: mt5-session-${{ github.run_id }}
+          key: mt5-session-latest
           restore-keys: |
             mt5-session-
 
@@ -299,7 +299,6 @@ jobs:
           Write-Host "MT5 INI : $env:MT5_INI"
           Write-Host "=============================="
 
-          # Ends before timeout so the next step can upload MT5 data.
           $end = (Get-Date).AddMinutes(340)
 
           while ((Get-Date) -lt $end) {
@@ -313,5 +312,4 @@ jobs:
         uses: actions/cache/save@v4
         with:
           path: C:\Users\runneradmin\Desktop\MT5_Platform
-          key: mt5-session-${{ github.run_id }}
-
+          key: mt5-session-latest
